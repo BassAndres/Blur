@@ -8,8 +8,9 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 export class Track {
   /** @param {object} def track definition from src/tracks */
-  constructor(def) {
+  constructor(def, quality = 'high') {
     this.def = def;
+    this.quality = quality;
     this.name = def.name;
     this.halfWidth = def.width / 2;
     this.laps = def.laps ?? 3;
@@ -118,7 +119,8 @@ export class Track {
     roadGeo.setAttribute('position', new THREE.Float32BufferAttribute(roadPos, 3));
     roadGeo.setIndex(roadIdx);
     roadGeo.computeVertexNormals();
-    const roadMat = new THREE.MeshStandardMaterial({ color: 0x111522, roughness: 0.85, metalness: 0.1 });
+    // wet-look asphalt: reflective enough to catch the neon environment
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x0b0e18, roughness: 0.36, metalness: 0.55, envMapIntensity: 0.9 });
     const road = new THREE.Mesh(roadGeo, roadMat);
     road.receiveShadow = true;
     this.group.add(road);
@@ -211,19 +213,87 @@ export class Track {
   }
 
   _buildEnvironment() {
-    // dark reflective ground
+    // dark, faintly reflective ground (catches neon)
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(4000, 4000),
-      new THREE.MeshStandardMaterial({ color: 0x04050c, roughness: 1, metalness: 0 })
+      new THREE.PlaneGeometry(6000, 6000),
+      new THREE.MeshStandardMaterial({ color: 0x05060f, roughness: 0.55, metalness: 0.3, envMapIntensity: 0.4 })
     );
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.05;
+    ground.position.y = -0.06;
     ground.receiveShadow = true;
     this.group.add(ground);
 
-    const grid = new THREE.GridHelper(4000, 200, 0x143055, 0x0c1b33);
-    grid.position.y = -0.04;
+    const grid = new THREE.GridHelper(6000, 300, 0x14305a, 0x0a1530);
+    grid.position.y = -0.05;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.5;
     this.group.add(grid);
+
+    this._buildCity();
+    this._buildStars();
+  }
+
+  // Neon-lit skyline of buildings placed just outside the track loop.
+  _buildCity() {
+    const N = this.samples;
+    const palette = [0x19e6ff, 0xff2bd6, 0x39ff88, 0xffe14d, 0xff5a1f, 0x9b6bff];
+    const facadeMat = new THREE.MeshStandardMaterial({ color: 0x0a0d18, roughness: 0.7, metalness: 0.4, envMapIntensity: 0.5 });
+    const rng = (s => () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296)(1337);
+    const mobile = this.quality === 'mobile';
+    const step = mobile ? 18 : 10;
+    const skip = mobile ? 0.62 : 0.45;
+
+    for (let i = 0; i < N; i += step) {
+      const s = this._table[i % N];
+      for (const sgn of [-1, 1]) {
+        if (rng() < skip) continue;
+        const dist = this.halfWidth + 16 + rng() * 90;
+        const base = new THREE.Vector3().copy(s.pos).addScaledVector(s.side, sgn * dist);
+        const w = 8 + rng() * 16;
+        const d = 8 + rng() * 16;
+        const h = 18 + rng() * 90;
+        const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), facadeMat);
+        b.position.set(base.x, h / 2, base.z);
+        b.rotation.y = rng() * Math.PI;
+        b.castShadow = false; b.receiveShadow = true;
+        this.group.add(b);
+        // glowing crown / sign
+        const col = palette[(i + (sgn > 0 ? 1 : 0)) % palette.length];
+        const crown = new THREE.Mesh(
+          new THREE.BoxGeometry(w * 0.9, 1.2 + rng() * 2.5, d * 0.9),
+          new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 1.8 })
+        );
+        crown.position.set(base.x, h + 1, base.z);
+        crown.rotation.y = b.rotation.y;
+        this.group.add(crown);
+        // vertical neon strip
+        if (rng() < 0.5) {
+          const strip = new THREE.Mesh(
+            new THREE.BoxGeometry(0.5, h * 0.7, 0.5),
+            new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 1.4 })
+          );
+          strip.position.set(base.x + Math.sign(sgn) * w * 0.45, h * 0.45, base.z);
+          this.group.add(strip);
+        }
+      }
+    }
+  }
+
+  _buildStars() {
+    const count = 900;
+    const arr = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const r = 1400 + Math.random() * 800;
+      const th = Math.random() * Math.PI * 2;
+      const ph = Math.random() * Math.PI * 0.4 + 0.05;
+      arr[i * 3] = Math.cos(th) * Math.sin(ph) * r;
+      arr[i * 3 + 1] = Math.cos(ph) * r * 0.8 + 120;
+      arr[i * 3 + 2] = Math.sin(th) * Math.sin(ph) * r;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    const stars = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x9fc4ff, size: 2.2, sizeAttenuation: false, transparent: true, opacity: 0.8 }));
+    this.group.add(stars);
   }
 
   _computeStartGrid() {

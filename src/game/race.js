@@ -32,7 +32,8 @@ export class Race {
     this.paused = false;
 
     // build world
-    this.track = new Track(config.trackDef);
+    this.quality = renderer.quality || 'high';
+    this.track = new Track(config.trackDef, this.quality);
     if (this.track.laps != null && config.laps) this.track.laps = config.laps;
     this.scene.add(this.track.build());
 
@@ -57,8 +58,9 @@ export class Race {
     const starts = this.track.startPositions;
 
     // player
+    const quality = this.quality;
     const pCar = getCar(this.config.playerCarId);
-    const player = new Vehicle(pCar, { isPlayer: true, name: 'TÚ' });
+    const player = new Vehicle(pCar, { isPlayer: true, name: 'TÚ', quality });
     player.placeAt(starts[0]);
     this.scene.add(player.mesh);
     this.vehicles.push(player);
@@ -68,7 +70,7 @@ export class Race {
     const pool = CARS.filter((c) => c.id !== pCar.id);
     for (let i = 1; i < field; i++) {
       const car = pool[(i - 1) % pool.length];
-      const v = new Vehicle(car, { name: AI_NAMES[(i - 1) % AI_NAMES.length] });
+      const v = new Vehicle(car, { name: AI_NAMES[(i - 1) % AI_NAMES.length], quality });
       v.placeAt(starts[i % starts.length]);
       this.scene.add(v.mesh);
       this.vehicles.push(v);
@@ -227,6 +229,7 @@ export class Race {
 
   _updateCameraAndHud(dt, racing) {
     const p = this.player;
+    this.renderer.followShadow(p.pos);
     const fwd = this._tmp.set(Math.sin(p.yaw), 0, Math.cos(p.yaw));
     const back = this.input.state.lookBack;
     const dir = back ? fwd.clone().negate() : fwd;

@@ -8,10 +8,11 @@ import { buildCarMesh } from './cars.js';
 const UP = new THREE.Vector3(0, 1, 0);
 
 export class Vehicle {
-  constructor(carDef, { isPlayer = false, name = 'CPU' } = {}) {
+  constructor(carDef, { isPlayer = false, name = 'CPU', quality = 'high' } = {}) {
     this.carDef = carDef;
     this.isPlayer = isPlayer;
     this.name = name;
+    this.steerInput = 0;
 
     // Derived tuning from arcade stats (0..1)
     this.maxSpeed = 36 + carDef.topSpeed * 44;       // m/s  (~130..288 km/h)
@@ -55,7 +56,7 @@ export class Vehicle {
     this.driftAmount = 0;    // 0..1 for visuals/audio
     this.boostPad = 0;
 
-    this.mesh = buildCarMesh(carDef.color, { isPlayer });
+    this.mesh = buildCarMesh(carDef.color, { headlights: isPlayer, quality });
     this._tmpFwd = new THREE.Vector3();
   }
 
@@ -94,6 +95,7 @@ export class Vehicle {
       this.yaw += 6 * dt; // visible spin
       controls = { steer: 0, throttle: 0, brake: 0, handbrake: false };
     }
+    this.steerInput = controls.steer;
 
     // --- longitudinal ---
     const nitro = this.nitroTime > 0;
@@ -264,9 +266,17 @@ export class Vehicle {
     this.mesh.rotation.z = -lean * latSign;
     // blink/hide briefly right after being destroyed
     this.mesh.visible = !(this.respawnTime > 1.2);
-    // spin wheels
+    // spin wheels + steer the front pair
     const wheels = this.mesh.userData.wheels;
-    if (wheels) { const spin = this.forwardSpeed * 0.1; for (const w of wheels) w.rotation.x += spin; }
+    if (wheels) {
+      this._wheelSpin = (this._wheelSpin || 0) + this.forwardSpeed * 0.045;
+      const steerAngle = -this.steerInput * 0.5;
+      const front = this.mesh.userData.frontWheels || [];
+      for (const w of wheels) {
+        w.rotation.y = front.includes(w) ? steerAngle : 0;
+        w.rotation.x = this._wheelSpin;
+      }
+    }
     // shield visual
     if (this._shieldMesh) this._shieldMesh.visible = this.shieldTime > 0;
   }
