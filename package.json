@@ -1,0 +1,24 @@
+{
+  "name": "blur",
+  "version": "1.0.0",
+  "description": "Blur - arcade combat racing with neon power-ups (mobile)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "cap:sync": "cap sync android",
+    "cap:add": "cap add android",
+    "android:build": "npm run build && cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^5.7.0",
+    "@capacitor/cli": "^5.7.0",
+    "@capacitor/core": "^5.7.0",
+    "typescript": "^6.0.3",
+    "vite": "^5.0.0"
+  }
+}
