@@ -18,6 +18,7 @@ import argparse
 import copy
 import csv
 import json
+import json as _json
 import random
 import re
 import sys
@@ -25,6 +26,12 @@ import time
 import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+try:  # usar los certificados de Windows/macOS (redes corporativas con inspección HTTPS)
+    import truststore
+    truststore.inject_into_ssl()
+except Exception:
+    pass
 
 PORTAL = "https://sds.basf.com/"
 API = "https://api.sds.basf.com:9446/api"
@@ -54,6 +61,36 @@ COLUMNAS = [
 
 class ErrorPortal(Exception):
     pass
+
+
+class _Respuesta:
+    """Lo mínimo de requests.Response para las peticiones hechas desde el navegador."""
+
+    def __init__(self, status_code, headers, content):
+        self.status_code = status_code
+        self.headers = headers
+        self.content = content
+
+    @property
+    def text(self):
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return _json.loads(self.text or "null")
+
+
+_JS_FETCH = """async ([metodo, url, cuerpo, auth]) => {
+  const h = {'Accept': 'application/json, text/plain, */*', 'Authorization': auth};
+  if (cuerpo !== null) h['Content-Type'] = 'application/json';
+  const r = await fetch(url, {method: metodo, headers: h, body: cuerpo});
+  const buf = new Uint8Array(await r.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000)
+    bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  const headers = {};
+  r.headers.forEach((v, k) => { headers[k] = v; });
+  return {status: r.status, headers, b64: btoa(bin)};
+}"""
 
 
 # --------------------------------------------------------------------------
@@ -250,6 +287,7 @@ class Portal:
         self.cuerpo_spa = None
         self.plantilla = None
         self.orgs_validas = None  # fuentes (source) para las que D016 es válida
+        self.usar_navegador = False
 
     # -- ciclo de vida --
     def __enter__(self):
@@ -258,9 +296,21 @@ class Portal:
 
         self._pw = sync_playwright().start()
         opciones = dict(headless=self.headless, locale="es-MX", viewport={"width": 1280, "height": 900})
-        if self.navegador != "chromium":
-            opciones["channel"] = self.navegador
-        self.ctx = self._pw.chromium.launch_persistent_context(str(self.perfil), **opciones)
+        candidatos = (["chromium", "msedge", "chrome"] if self.navegador == "auto"
+                      else [self.navegador])
+        self.ctx, fallos = None, []
+        for nav in candidatos:
+            extra = {} if nav == "chromium" else {"channel": nav}
+            try:
+                self.ctx = self._pw.chromium.launch_persistent_context(
+                    str(self.perfil), **opciones, **extra)
+                print(f"Navegador: {nav}")
+                break
+            except Exception as e:
+                fallos.append(f"{nav}: {str(e).splitlines()[0]}")
+        if self.ctx is None:
+            self._pw.stop()
+            raise ErrorPortal("No se pudo abrir ningún navegador:\n  " + "\n  ".join(fallos))
         self.ctx.on("request", self._al_pedir)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.page.goto(PORTAL, wait_until="domcontentloaded", timeout=120000)
@@ -329,19 +379,46 @@ class Portal:
     def _dormir(self):
         time.sleep(self.pausa * random.uniform(0.7, 1.4))
 
+    def _pedir_con_navegador(self, metodo, url, params=None, json=None):
+        """La misma petición, hecha con fetch() desde la página del portal:
+        usa la red, el proxy y los certificados del navegador."""
+        import base64
+        from urllib.parse import urlencode
+        from requests.structures import CaseInsensitiveDict
+
+        if params:
+            url = f"{url}?{urlencode(params)}"
+        cuerpo = None if json is None else _json.dumps(json)
+        res = self.page.evaluate(_JS_FETCH, [metodo, url, cuerpo, self.token])
+        return _Respuesta(res["status"], CaseInsensitiveDict(res["headers"]),
+                          base64.b64decode(res["b64"]))
+
     def _llamar(self, metodo, url, **kw):
         import requests
 
         renovado = False
         ultimo = None
-        for intento in range(4):
+        intento = 0
+        while intento < 4:
             self._dormir()
             try:
-                r = self.http.request(metodo, url, timeout=(20, 180), **kw)
+                if self.usar_navegador:
+                    r = self._pedir_con_navegador(metodo, url, **kw)
+                else:
+                    r = self.http.request(metodo, url, timeout=(20, 180), **kw)
             except requests.RequestException as e:
-                ultimo = f"{type(e).__name__}: {e}"
-                time.sleep(5 * (intento + 1))
+                # Típico en redes corporativas (certificado o proxy propios):
+                # se pasa a hacer las peticiones desde el navegador.
+                print(f"   Conexión directa falló ({type(e).__name__}); "
+                      f"sigo usando la red del navegador.")
+                self.usar_navegador = True
                 continue
+            except Exception as e:
+                ultimo = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+                intento += 1
+                time.sleep(5 * intento)
+                continue
+            intento += 1
             if r.status_code in (401, 403) and not renovado:
                 renovado = True
                 self.renovar_token()
@@ -557,8 +634,8 @@ def main():
     ap.add_argument("--reporte", default=None, help="por defecto reporte.csv (reporte_recon.csv con --recon)")
     ap.add_argument("--pausa", type=float, default=2.0, help="segundos entre peticiones (aprox.)")
     ap.add_argument("--forzar", action="store_true", help="volver a bajar aunque el PDF ya exista")
-    ap.add_argument("--navegador", choices=["chromium", "chrome", "msedge"], default="chromium",
-                    help="chromium (requiere 'playwright install chromium'), o tu Chrome/Edge instalado")
+    ap.add_argument("--navegador", choices=["auto", "chromium", "msedge", "chrome"], default="auto",
+                    help="auto (por defecto): Chromium de Playwright si está, si no Edge, si no Chrome")
     ap.add_argument("--perfil", default=".perfil_basf",
                     help="carpeta del perfil del navegador (guarda la sesión)")
     args = ap.parse_args()
@@ -583,22 +660,26 @@ def main():
 
     print(f"{len(productos)} producto(s). PDFs en {dir_sds.resolve()}  Reporte: {reporte.resolve()}")
     filas = []
-    with Portal(args.navegador, Path(args.perfil).resolve(), args.pausa) as portal:
-        portal.esperar_sesion()
-        orgs = portal.cargar_orgs()
-        cuerpo = portal.capturar_plantilla(f"{productos[0]} MX")
-        if dir_recon:
-            (dir_recon / "organizaciones.json").write_text(
-                json.dumps(orgs, ensure_ascii=False, indent=2), encoding="utf-8")
-            (dir_recon / "busqueda_de_la_pagina.json").write_text(
-                json.dumps(cuerpo, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        with Portal(args.navegador, Path(args.perfil).resolve(), args.pausa) as portal:
+            portal.esperar_sesion()
+            orgs = portal.cargar_orgs()
+            cuerpo = portal.capturar_plantilla(f"{productos[0]} MX")
+            if dir_recon:
+                (dir_recon / "organizaciones.json").write_text(
+                    json.dumps(orgs, ensure_ascii=False, indent=2), encoding="utf-8")
+                (dir_recon / "busqueda_de_la_pagina.json").write_text(
+                    json.dumps(cuerpo, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        for i, producto in enumerate(productos, 1):
-            fila = procesar(portal, producto, dir_sds, args.forzar, dir_recon)
-            filas.append(fila)
-            escribir_reporte(reporte, filas)  # se va guardando por si se interrumpe
-            detalle = fila.get("nombre_documento") or fila.get("notas", "")[:90]
-            print(f"[{i}/{len(productos)}] {producto}: {fila['estado']} — {detalle}")
+            for i, producto in enumerate(productos, 1):
+                fila = procesar(portal, producto, dir_sds, args.forzar, dir_recon)
+                filas.append(fila)
+                escribir_reporte(reporte, filas)  # se va guardando por si se interrumpe
+                detalle = fila.get("nombre_documento") or fila.get("notas", "")[:90]
+                print(f"[{i}/{len(productos)}] {producto}: {fila['estado']} — {detalle}")
+    except ErrorPortal as e:
+        print(f"\nERROR: {e}")
+        return 1
 
     conteo = {}
     for f in filas:

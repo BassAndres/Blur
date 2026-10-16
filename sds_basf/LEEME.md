@@ -10,19 +10,13 @@ API del portal (`api.sds.basf.com:9446`) con la sesión abierta, con pausas de ~
 
 ## Instalación (una vez)
 
-Necesitas Python 3.9 o superior.
+Necesitas Python 3.9 o superior. Dentro de esta carpeta:
 
-Windows (PowerShell, dentro de esta carpeta):
+    py -m pip install -r requirements.txt          (macOS/Linux: python3 -m pip ...)
 
-    py -m pip install -r requirements.txt
-    py -m playwright install chromium
-
-macOS / Linux:
-
-    python3 -m pip install -r requirements.txt
-    python3 -m playwright install chromium
-
-Si no puedes instalar Chromium, usa tu navegador: agrega `--navegador msedge` o `--navegador chrome`.
+No hace falta `playwright install chromium`: si no está, el script usa Microsoft Edge (o Chrome).
+En redes corporativas con inspección HTTPS el script usa los certificados de Windows y, si
+la conexión directa aun así falla, hace las peticiones desde el propio navegador.
 
 ## Paso 1: reconocimiento (3 productos)
 
