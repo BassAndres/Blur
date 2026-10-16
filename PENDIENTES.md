@@ -4,9 +4,10 @@ Orden de trabajo: primero lo de arriba.
 
 ## 1. NUUP: Commercial Labels (en curso)
 
-- [ ] Reconocimiento con `nuup_etiquetas/nuup_recon.py --navegador` (inicio de sesión SSO con la cuenta de Windows).
-- [ ] Definir reglas: ¿una etiqueta por presentación o solo la más reciente?, ¿solo "APROBADA"?, ¿filtrar por quien la sube?
-- [ ] Descargador completo para los 142 productos de `sds_basf/productos.txt`.
+- [x] Reconocimiento (SSO; la API oficial no acepta la sesión del navegador → se usan las consultas internas de la UI).
+- [x] Reglas: Commercial Labels › BASF Labels, Approved, subida por Fernanda Camarillo, número de documento más alto.
+- [ ] Probar `descargar_etiquetas.py --recon` en el portal real.
+- [ ] Corrida completa de los 142 productos.
 
 ## 2. SDS BASF: cierre (en pausa hasta terminar NUUP)
 
