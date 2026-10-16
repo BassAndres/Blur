@@ -187,7 +187,8 @@ def rango_aproximado(producto, nombre):
     # Las letras pueden variar un poco; los números (concentración) no: 6 SC ≠ 60 SC.
     if re.findall(r"\d+", a) != re.findall(r"\d+", b):
         return None
-    if a and b and SequenceMatcher(None, a, b).ratio() >= 0.85:
+    # Solo errores de captura: casi el mismo largo (STROBY SC no es "Stroby").
+    if a and b and abs(len(a) - len(b)) <= 1 and SequenceMatcher(None, a, b).ratio() >= 0.85:
         return 5
     return None
 
@@ -323,7 +324,10 @@ def seleccionar(producto, reports, catalogo=None, orgs_validas=None, aproximado=
 def seleccionar_alternativa(producto, reports, catalogo=None, orgs_validas=None):
     """Sin versión MX: la mejor versión en español (primero la global *_00, luego la más reciente)."""
     por_nombre, _ = candidatos_por_nombre(producto, reports, catalogo, orgs_validas)
-    en_es = [r for k, r in por_nombre if es_espanol(r.get("language")) and r.get("genVar")]
+    # Solo el mismo producto (nombre exacto: "Headline Amp" no es HEADLINE) y solo hojas
+    # de seguridad (SDS_*; las SDI_* son otro tipo de documento).
+    en_es = [r for k, r in por_nombre if k == 0 and es_espanol(r.get("language"))
+             and str(r.get("genVar") or "").upper().startswith("SDS_")]
     if not en_es:
         return None
     return sorted(en_es, key=lambda r: (str(r.get("genVar")).endswith("_00"), clave_reciente(r)),
@@ -786,11 +790,16 @@ def main():
         dir_alternativas.mkdir(exist_ok=True)
     if args.reintentar:
         anteriores = dir_sds / "_anteriores"
+        dir_alt = Path("sds_alternativas")
         for producto in productos:
             pdf = dir_sds / nombre_archivo(producto)
             if pdf.exists():
                 anteriores.mkdir(exist_ok=True)
                 pdf.replace(anteriores / pdf.name)
+            base = nombre_archivo(producto).replace("_SDS_MX.pdf", "")
+            for alt in (dir_alt.glob(f"{base}_SDS_*.pdf") if dir_alt.exists() else []):
+                (dir_alt / "_anteriores").mkdir(exist_ok=True)
+                alt.replace(dir_alt / "_anteriores" / alt.name)
     dir_recon = None
     if args.recon:
         dir_recon = Path("recon")

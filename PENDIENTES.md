@@ -23,7 +23,9 @@ El detalle por producto está en `sds_pendientes.csv` (lo tiene el usuario).
 - [ ] **27 que no aparecen con ese nombre**: buscar por número de material o nombre alterno.
 - [ ] **11 por revisar** (nombre parecido o dos documentos MX): ACROBAT MZ, VIVANDO, BELANTY, TENOPA, AGNIQUE MMF, FORUM 500, QL AGRI 35, OPERA, OPUS, PHANTOM, PONCHO.
 - [x] Mejorar `descargar_sds.py`: fuente válida para D016, no tomar productos de otro renglón de la lista, producto al inicio del nombre, búsqueda solo-español y aproximada, `--reintentar`, `--alternativa-es`.
-- [ ] Correr `--reintentar reporte.csv` y armar la lista final para bajar a mano.
+- [x] Primer `--reintentar --alternativa-es`: 71 descargados, 34 alternativas, 28 no encontrados, 9 varias.
+- [x] Corregido: alternativas solo con nombre exacto y documentos SDS_*; aproximada solo con ±1 letra.
+- [ ] Segundo `--reintentar --alternativa-es` y lista final para bajar a mano.
 
 ## 3. Repositorio
 
