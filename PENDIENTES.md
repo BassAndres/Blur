@@ -2,13 +2,16 @@
 
 Orden de trabajo: primero lo de arriba.
 
-## 1. NUUP: Commercial Labels (en curso)
+## 1. NUUP: Commercial Labels (terminado; quedan revisiones a mano)
 
 - [x] Reconocimiento (SSO; la API oficial no acepta la sesión del navegador → se usan las consultas internas de la UI).
 - [x] Reglas: Commercial Labels › BASF Labels, Approved, cualquier autor; todas las etiquetas del paquete más reciente; si no hay, Non Commercial Labels.
 - [x] Reconocimiento con 3 productos (corregidas las marcas de resaltado `!@~ ~@!`).
 - [x] Primera corrida: 84 productos con etiqueta (242 PDF), 58 sin etiqueta.
-- [ ] Segunda corrida con las reglas nuevas y lista final de faltantes.
+- [x] Segunda corrida: 89 productos con etiqueta (232 comerciales + 4 no comerciales).
+- [ ] A mano: AGNIQUE MMF (falló la descarga; el título dice AGNIQUE TXI), STORM SECURE (solo borrador).
+- [ ] 26 sin ningún documento en NUUP y 25 con solo productos parecidos (lista en `etiquetas_pendientes.csv`).
+- [ ] Revisar las 4 no comerciales (muestras; FENDONDA 60 SC dice 6 SC) y 8 con borrador más nuevo.
 
 ## 2. SDS BASF: cierre (en curso)
 
