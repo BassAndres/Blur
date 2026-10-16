@@ -36,6 +36,24 @@ la conexión directa aun así falla, hace las peticiones desde el propio navegad
 - Solo algunos productos: `py descargar_sds.py --solo "HEAT" "STORM (PELLETS)"`
 - Más lento o más rápido: `--pausa 4`
 
+## Reintentar lo pendiente
+
+    py descargar_sds.py --reintentar reporte.csv
+    py descargar_sds.py --reintentar reporte.csv --alternativa-es
+
+- Reprocesa solo los productos no descargados o con coincidencia parcial. Los PDF anteriores
+  de esos productos se mueven a `sds/_anteriores/` y el resultado se combina en `reporte.csv`
+  (respaldo en `reporte_anterior.csv`).
+- `--alternativa-es`: si no hay versión MX en español, baja la mejor versión en español
+  (primero la global `*_00`, luego la más reciente) a `sds_alternativas/` con estado
+  `alternativa (no MX)`.
+
+Reglas extra: se descartan documentos cuya fuente no admite D016 (p. ej. recubrimientos),
+nombres que corresponden mejor a otro producto de la lista (SIEGE PRO para SIEGE) y
+coincidencias parciales donde el producto no va al inicio del nombre. Si nada aparece, se
+intenta solo con filtro de español y, al final, una búsqueda aproximada (errores de captura
+como FENDONDA/Fendona; los números deben coincidir), marcada como `aproximada` para revisar.
+
 ## Reporte
 
 Columnas: producto, termino_buscado, estado, nombre_documento, variante, idioma, version,

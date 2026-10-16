@@ -54,6 +54,7 @@ DESCARGADO = "descargado"
 NO_ENCONTRADO = "no encontrado"
 VARIAS = "varias coincidencias"
 ERROR = "error"
+ALTERNATIVA = "alternativa (no MX)"
 
 COLUMNAS = [
     "producto", "termino_buscado", "estado", "nombre_documento", "variante",
@@ -166,14 +167,28 @@ def rango_nombre(producto, nombre):
             unido += tiene[j]
             if unido == compacto:
                 resto = tiene[:i] + tiene[j + 1:]
-                return sum(1 for t in resto if _token_relevante(t))
+                extra = sum(1 for t in resto if _token_relevante(t))
+                # Si el nombre trae palabras de más, el producto debe ir al inicio
+                # ("RAM INTEGRITY 1R RESIN" no es INTEGRITY; "Belanty SC" sí es BELANTY).
+                if extra and any(_token_relevante(t) for t in tiene[:i]):
+                    return None
+                return extra
             if len(unido) >= len(compacto):
                 break
-    if all(t in tiene for t in buscado):
-        resto = list(tiene)
-        for t in buscado:
-            resto.remove(t)
-        return sum(1 for t in resto if _token_relevante(t))
+    return None
+
+
+def rango_aproximado(producto, nombre):
+    """Para errores de captura (FENDONDA vs Fendona): similitud del nombre completo."""
+    from difflib import SequenceMatcher
+    a = "".join(tokens(producto))
+    base = nombre.split(",")[0] if "," in nombre else nombre
+    b = "".join(t for t in tokens(base) if _token_relevante(t))
+    # Las letras pueden variar un poco; los números (concentración) no: 6 SC ≠ 60 SC.
+    if re.findall(r"\d+", a) != re.findall(r"\d+", b):
+        return None
+    if a and b and SequenceMatcher(None, a, b).ratio() >= 0.85:
+        return 5
     return None
 
 
@@ -231,16 +246,43 @@ def describir(r):
             f"bi {r.get('biNumber')}")
 
 
-def seleccionar(producto, reports):
-    """Filtra los resultados (nombre del producto + español + variante con MX)
-    y elige el documento más reciente. Devuelve un dict con:
+def de_otro_producto(producto, nombre, rango, catalogo):
+    """¿El nombre corresponde mejor a otro producto de la lista? (SIEGE PRO para SIEGE)."""
+    for otro in catalogo or []:
+        if otro == producto:
+            continue
+        k = rango_nombre(otro, nombre)
+        if k is not None and k < rango:
+            return otro
+    return None
+
+
+def candidatos_por_nombre(producto, reports, catalogo=None, orgs_validas=None, aproximado=False):
+    descartes = []
+    salida = []
+    for r in aplanar(reports):
+        nombre = nombre_material(r)
+        rango = (rango_aproximado if aproximado else rango_nombre)(producto, nombre)
+        if rango is None:
+            continue
+        if orgs_validas is not None and (r.get("source") or "") not in orgs_validas:
+            descartes.append(f"fuente {r.get('source')} no es de D016: '{nombre}'")
+            continue
+        otro = de_otro_producto(producto, nombre, rango, catalogo) if rango else None
+        if otro:
+            descartes.append(f"'{nombre}' es de {otro}")
+            continue
+        salida.append((rango, r))
+    return salida, descartes
+
+
+def seleccionar(producto, reports, catalogo=None, orgs_validas=None, aproximado=False):
+    """Filtra los resultados (nombre del producto + español + variante con MX +
+    fuente válida para D016) y elige el documento más reciente. Devuelve un dict con:
     elegido, varias (bool), alternativas, rango, notas."""
     todos = aplanar(reports)
-    por_nombre = []
-    for r in todos:
-        rango = rango_nombre(producto, nombre_material(r))
-        if rango is not None:
-            por_nombre.append((rango, r))
+    por_nombre, descartes = candidatos_por_nombre(producto, reports, catalogo, orgs_validas,
+                                                  aproximado)
     validos = [(k, r) for k, r in por_nombre
                if es_espanol(r.get("language")) and es_variante_mx(r.get("genVar"))]
 
@@ -251,6 +293,8 @@ def seleccionar(producto, reports):
                     f"con variante MX (idioma/variante: {', '.join(vistos)[:300]})")
         else:
             nota = f"{len(todos)} resultado(s), ninguno con el nombre del producto"
+        if descartes:
+            nota += "; descartados: " + " || ".join(sorted(set(descartes))[:4])
         return {"elegido": None, "varias": False, "alternativas": [], "rango": None,
                 "notas": nota}
 
@@ -268,10 +312,22 @@ def seleccionar(producto, reports):
     ordenados = sorted(documentos.values(), key=clave_reciente, reverse=True)
     elegido = ordenados[0]
     notas = []
-    if mejor > 0:
+    if aproximado:
+        notas.append(f"REVISAR: nombre aproximado en el portal: '{nombre_material(elegido)}'")
+    elif mejor > 0:
         notas.append(f"nombre no exacto en el portal: '{nombre_material(elegido)}'")
     return {"elegido": elegido, "varias": len(ordenados) > 1,
             "alternativas": ordenados[1:], "rango": mejor, "notas": "; ".join(notas)}
+
+
+def seleccionar_alternativa(producto, reports, catalogo=None, orgs_validas=None):
+    """Sin versión MX: la mejor versión en español (primero la global *_00, luego la más reciente)."""
+    por_nombre, _ = candidatos_por_nombre(producto, reports, catalogo, orgs_validas)
+    en_es = [r for k, r in por_nombre if es_espanol(r.get("language")) and r.get("genVar")]
+    if not en_es:
+        return None
+    return sorted(en_es, key=lambda r: (str(r.get("genVar")).endswith("_00"), clave_reciente(r)),
+                  reverse=True)[0]
 
 
 def cargar_productos(ruta):
@@ -497,7 +553,7 @@ class Portal:
             self.plantilla = None
         return self.cuerpo_spa
 
-    def _cuerpo(self, termino, pagina, filtrar):
+    def _cuerpo(self, termino, pagina, filtrar, aproximado=False):
         if self.plantilla:
             cuerpo = copy.deepcopy(self.plantilla)
         else:
@@ -510,16 +566,17 @@ class Portal:
                 "releaseDateFilter": {}, "orders": [],
             }
         cuerpo.update({"searchString": termino, "searchFields": list(CAMPOS_BUSQUEDA),
-                       "advancedSearch": False, "fuzzy": False, "page": pagina,
+                       "advancedSearch": False, "fuzzy": bool(aproximado), "page": pagina,
                        "itemsPerPage": RESULTADOS_POR_PAGINA,
                        "languageFilters": [FILTRO_IDIOMA] if filtrar else [],
-                       "validityAreaFilters": [FILTRO_AREA] if filtrar else []})
+                       "validityAreaFilters": [FILTRO_AREA] if filtrar == "mx" or filtrar is True else []})
         return cuerpo
 
-    def buscar(self, termino, producto, crudo=None, filtrar=True):
+    def buscar(self, termino, producto, crudo=None, filtrar=True, aproximado=False):
         reports = []
-        for pagina in range(MAX_PAGINAS):
-            r = self._llamar("POST", SEARCH_URL, json=self._cuerpo(termino, pagina, filtrar))
+        for pagina in range(3 if aproximado else MAX_PAGINAS):
+            r = self._llamar("POST", SEARCH_URL,
+                             json=self._cuerpo(termino, pagina, filtrar, aproximado))
             if r.status_code != 200:
                 raise ErrorPortal(f"búsqueda '{termino}' HTTP {r.status_code}: {r.text[:200]}")
             datos = r.json() or {}
@@ -536,8 +593,8 @@ class Portal:
             if pagina + 1 >= total_paginas:
                 break
             # Resultados por relevancia: si esta página ya no trae el producto, parar.
-            if not any(rango_nombre(producto, nombre_material(x)) is not None
-                       for x in aplanar(nuevos)):
+            if not aproximado and not any(rango_nombre(producto, nombre_material(x)) is not None
+                                          for x in aplanar(nuevos)):
                 break
         return reports
 
@@ -565,28 +622,50 @@ class Portal:
 # Proceso por producto
 # --------------------------------------------------------------------------
 
-def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
+ETIQUETAS_FILTRO = {"mx": "", "es": " (solo español)", None: " (sin filtros)"}
+
+
+def procesar(portal, producto, dir_sds, forzar, dir_recon=None, catalogo=None,
+             dir_alternativas=None):
     fila = {"producto": producto, "archivo": nombre_archivo(producto)}
     notas = []
     try:
         sel, termino = None, None
-        # Con los filtros del portal (español + área MX); al final, respaldo sin filtros.
-        intentos = [(f"{producto} MX", True), (producto, True), (producto, False)]
-        for termino, filtrar in intentos:
+        vistos = []  # todos los resultados, para buscar alternativa en español
+        # Filtros del portal (español + área MX), luego solo español, sin filtros y,
+        # al final, búsqueda aproximada (errores de captura en el nombre).
+        intentos = [(f"{producto} MX", "mx", False), (producto, "mx", False),
+                    (producto, "es", False), (producto, None, False), (producto, "mx", True)]
+        for termino, filtrar, aproximado in intentos:
             crudo = [] if dir_recon else None
-            reports = portal.buscar(termino, producto, crudo, filtrar)
+            reports = portal.buscar(termino, producto, crudo, filtrar, aproximado)
+            vistos.extend(reports)
             if dir_recon:
                 guardar_recon(dir_recon, producto, termino, crudo, reports, filtrar)
-            sel = seleccionar(producto, reports)
+            sel = seleccionar(producto, reports, catalogo, portal.orgs_validas, aproximado)
             if sel["elegido"]:
                 break
-            etiqueta = "" if filtrar else " (sin filtros)"
+            etiqueta = ETIQUETAS_FILTRO[filtrar] + (" (aproximada)" if aproximado else "")
             notas.append(f"'{termino}'{etiqueta}: {sel['notas']}")
         fila["termino_buscado"] = termino
 
         elegido = sel["elegido"]
         if not elegido:
             fila.update(estado=NO_ENCONTRADO, archivo="")
+            alt = (seleccionar_alternativa(producto, vistos, catalogo, portal.orgs_validas)
+                   if dir_alternativas else None)
+            if alt:
+                org, _ = portal.org_para(alt)
+                nombre = f"{nombre_archivo(producto).replace('_SDS_MX.pdf', '')}_SDS_{alt.get('genVar')}.pdf"
+                destino = dir_alternativas / nombre
+                if not destino.exists() or forzar:
+                    destino.write_bytes(portal.descargar(alt, org))
+                fila.update(estado=ALTERNATIVA, archivo=f"{dir_alternativas.name}/{nombre}",
+                            nombre_documento=nombre_material(alt), variante=alt.get("genVar") or "",
+                            idioma=alt.get("language") or "", version=texto_version(alt),
+                            fecha=texto_fecha(alt), material=alt.get("materialNumber") or "",
+                            bi_number=alt.get("biNumber") or "", org_venta=org)
+                notas.insert(0, "SIN VERSIÓN MX: se bajó la mejor versión en español como alternativa")
             fila["notas"] = "; ".join(notas)
             return fila
 
@@ -600,11 +679,12 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
             material=elegido.get("materialNumber") or "",
             bi_number=elegido.get("biNumber") or "",
             org_venta=org,
-            coincidencia_nombre="exacta" if sel["rango"] == 0 else "parcial",
+            coincidencia_nombre=("aproximada" if aproximado else
+                                 "exacta" if sel["rango"] == 0 else "parcial"),
         )
         if termino == producto:
             notas.append(f"no apareció con '{producto} MX'; encontrado buscando solo el nombre"
-                         + ("" if filtrar else " y sin filtros"))
+                         + ETIQUETAS_FILTRO[filtrar] + (" (aproximada)" if aproximado else ""))
         if sel["notas"]:
             notas.append(sel["notas"])
         if nota_org:
@@ -632,10 +712,11 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
 
 def guardar_recon(dir_recon, producto, termino, crudo, reports, filtrar):
     base = nombre_archivo(producto).replace("_SDS_MX.pdf", "")
-    sufijo = ("MX" if termino.endswith(" MX") else "solo_nombre") + ("" if filtrar else "_sin_filtros")
+    sufijo = ("MX" if termino.endswith(" MX") else "solo_nombre") + f"_{filtrar or 'sin_filtros'}"
     ruta = dir_recon / f"{base}__{sufijo}.json"
     ruta.write_text(json.dumps(crudo, ensure_ascii=False, indent=2), encoding="utf-8")
-    filtro = f"filtros {FILTRO_IDIOMA}+{FILTRO_AREA}" if filtrar else "sin filtros"
+    filtro = {"mx": f"filtros {FILTRO_IDIOMA}+{FILTRO_AREA}", True: f"filtros {FILTRO_IDIOMA}+{FILTRO_AREA}",
+              "es": f"filtro {FILTRO_IDIOMA}", None: "sin filtros", False: "sin filtros"}[filtrar]
     lineas = [f"\n=== {producto} — búsqueda '{termino}' ({filtro}): "
               f"{len(aplanar(reports))} resultado(s)"]
     for r in aplanar(reports):
@@ -670,20 +751,46 @@ def main():
                     help="auto (por defecto): Chromium de Playwright si está, si no Edge, si no Chrome")
     ap.add_argument("--perfil", default=".perfil_basf",
                     help="carpeta del perfil del navegador (guarda la sesión)")
+    ap.add_argument("--reintentar", metavar="REPORTE",
+                    help="reprocesar solo lo pendiente de ese reporte (no descargados o con "
+                         "coincidencia parcial); los PDF anteriores se mueven a sds/_anteriores/")
+    ap.add_argument("--alternativa-es", action="store_true",
+                    help="si no hay versión MX, bajar la mejor versión en español a sds_alternativas/")
     args = ap.parse_args()
+    catalogo = None
 
+    ruta = Path(args.productos)
+    if not ruta.exists():
+        ruta = Path(__file__).resolve().parent / args.productos
+    if ruta.exists():
+        catalogo = cargar_productos(ruta)
+    filas_previas = []
     if args.recon:
         productos = list(PRODUCTOS_RECON)
+    elif args.reintentar:
+        with open(args.reintentar, encoding="utf-8-sig") as f:
+            filas_previas = list(csv.DictReader(f))
+        productos = [f["producto"] for f in filas_previas
+                     if f.get("estado") != DESCARGADO or f.get("coincidencia_nombre") not in ("exacta", "")]
     elif args.solo:
         productos = args.solo
     else:
-        ruta = Path(args.productos)
-        if not ruta.exists():
-            ruta = Path(__file__).resolve().parent / args.productos
-        productos = cargar_productos(ruta)
-    reporte = Path(args.reporte or ("reporte_recon.csv" if args.recon else "reporte.csv"))
+        productos = list(catalogo or [])
+    reporte = Path(args.reporte or ("reporte_recon.csv" if args.recon else
+                                    "reporte_reintento.csv" if args.reintentar else "reporte.csv"))
     dir_sds = Path(args.salida)
     dir_sds.mkdir(parents=True, exist_ok=True)
+    dir_alternativas = None
+    if args.alternativa_es:
+        dir_alternativas = Path("sds_alternativas")
+        dir_alternativas.mkdir(exist_ok=True)
+    if args.reintentar:
+        anteriores = dir_sds / "_anteriores"
+        for producto in productos:
+            pdf = dir_sds / nombre_archivo(producto)
+            if pdf.exists():
+                anteriores.mkdir(exist_ok=True)
+                pdf.replace(anteriores / pdf.name)
     dir_recon = None
     if args.recon:
         dir_recon = Path("recon")
@@ -704,7 +811,8 @@ def main():
                     json.dumps(cuerpo, ensure_ascii=False, indent=2), encoding="utf-8")
 
             for i, producto in enumerate(productos, 1):
-                fila = procesar(portal, producto, dir_sds, args.forzar, dir_recon)
+                fila = procesar(portal, producto, dir_sds, args.forzar, dir_recon, catalogo,
+                                dir_alternativas)
                 filas.append(fila)
                 escribir_reporte(reporte, filas)  # se va guardando por si se interrumpe
                 detalle = fila.get("nombre_documento") or fila.get("notas", "")[:90]
@@ -712,6 +820,18 @@ def main():
     except ErrorPortal as e:
         print(f"\nERROR: {e}")
         return 1
+
+    if args.reintentar and filas:
+        # Junta lo nuevo con el reporte original (que se respalda antes).
+        original = Path(args.reintentar)
+        respaldo = original.with_name(original.stem + "_anterior.csv")
+        if not respaldo.exists():
+            respaldo.write_bytes(original.read_bytes())
+        nuevas = {f["producto"]: f for f in filas}
+        filas = [nuevas.get(f["producto"], f) for f in filas_previas]
+        escribir_reporte(original, filas)
+        reporte = original
+        print(f"\nReporte combinado: {original.resolve()} (respaldo: {respaldo.name})")
 
     conteo = {}
     for f in filas:

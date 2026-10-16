@@ -9,7 +9,7 @@ Orden de trabajo: primero lo de arriba.
 - [x] Reconocimiento con 3 productos (corregidas las marcas de resaltado `!@~ ~@!`).
 - [ ] Corrida completa de los 142 productos.
 
-## 2. SDS BASF: cierre (en pausa hasta terminar NUUP)
+## 2. SDS BASF: cierre (en curso)
 
 Corrida completa: 71 descargados, 9 con varias coincidencias, 62 no encontrados.
 El detalle por producto está en `sds_pendientes.csv` (lo tiene el usuario).
@@ -18,7 +18,8 @@ El detalle por producto está en `sds_pendientes.csv` (lo tiene el usuario).
 - [ ] **35 sin versión en español para México** en el portal: decidir si sirve otra variante en español (p. ej. SDS_CPA_00) o pedirlas a BASF.
 - [ ] **27 que no aparecen con ese nombre**: buscar por número de material o nombre alterno.
 - [ ] **11 por revisar** (nombre parecido o dos documentos MX): ACROBAT MZ, VIVANDO, BELANTY, TENOPA, AGNIQUE MMF, FORUM 500, QL AGRI 35, OPERA, OPUS, PHANTOM, PONCHO.
-- [ ] Mejorar `descargar_sds.py` con lo aprendido: no aceptar coincidencias de otras líneas de negocio (pinturas, resinas); preferir el nombre exacto cuando el producto de la lista es prefijo de otro (SIEGE vs SIEGE PRO).
+- [x] Mejorar `descargar_sds.py`: fuente válida para D016, no tomar productos de otro renglón de la lista, producto al inicio del nombre, búsqueda solo-español y aproximada, `--reintentar`, `--alternativa-es`.
+- [ ] Correr `--reintentar reporte.csv` y armar la lista final para bajar a mano.
 
 ## 3. Repositorio
 
