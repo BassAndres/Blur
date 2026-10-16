@@ -84,9 +84,16 @@ def producto_y_numero(nombre_doc):
     return normalizar(m.group(1)), int(m.group(2))
 
 
+_MARCAS = re.compile(r"!@~|~@!")  # NUUP resalta así el término buscado
+
+
+def limpiar(texto):
+    return _MARCAS.sub("", str(texto or "")).strip()
+
+
 def campo(doc, nombre):
     f = (doc.get("returnFieldMap") or {}).get(nombre) or {}
-    return f.get("displayValueWithHL") or ""
+    return limpiar(f.get("displayValueWithHL"))
 
 
 def resumir(solr):
@@ -98,7 +105,7 @@ def resumir(solr):
     return {
         "id": solr.get("documentId"), "major": solr.get("majorVersion"),
         "minor": solr.get("minorVersion"), "categoria": solr.get("categoryKey"),
-        "archivo_origen": solr.get("contentFileName") or "",
+        "archivo_origen": limpiar(solr.get("contentFileName")),
         "nombre": campo(solr, "name"), "producto": prod, "numero": numero,
         "titulo": campo(solr, "title"), "estado": campo(solr, "status"),
         "creado_por": campo(solr, "DocCreatedBy"),
@@ -129,7 +136,13 @@ def seleccionar(producto, docs):
             nota += " (subidas por: " + ", ".join(sorted({d['creado_por'] for d in aprobadas})) + ")"
         return None, [], nota
     de_fer.sort(key=lambda d: d["numero"], reverse=True)
-    return de_fer[0], de_fer[1:], ""
+    elegido = de_fer[0]
+    nuevas = [d for d in del_producto if d["numero"] > elegido["numero"] and d not in de_fer]
+    nota = ""
+    if nuevas:
+        nota = ("OJO: hay etiquetas con número más alto que no cumplen las reglas: " +
+                " || ".join(f"{d['nombre']} ({d['estado']}, {d['creado_por']})" for d in nuevas[:5]))
+    return elegido, de_fer[1:], nota
 
 
 def cargar_productos(ruta):
@@ -226,11 +239,22 @@ class Nuup:
         raise ErrorNuup(f"{metodo} {url[:80]} falló: {ultimo}")
 
     def buscar(self, termino, con_filtro=True):
+        docs, paginas = [], []
+        for pagina in range(5):
+            nuevos, datos = self._buscar_pagina(termino, con_filtro, pagina * 100)
+            docs.extend(nuevos)
+            paginas.append(datos)
+            total = (datos.get("payload") or {}).get("totalCount") or 0
+            if len(nuevos) < 100 or len(docs) >= total:
+                break
+        return docs, paginas
+
+    def _buscar_pagina(self, termino, con_filtro, inicio):
         params = [("search", termino), ("count", "100"), ("sort", "name"), ("sortOrder", "desc"),
                   ("categories", ""), ("viewType", "REPORTING"), ("returnFacets", "false"),
                   ("returnDocAttrs", "false"), ("searchByUser", ""), ("advSearch", "false"),
-                  ("runSmartFilter", "false"), ("startIndex", "0"), ("sizeOfChunk", "100"),
-                  ("start", "0")]
+                  ("runSmartFilter", "false"), ("startIndex", str(inicio)), ("sizeOfChunk", "100"),
+                  ("start", str(inicio))]
         if con_filtro:
             params.append(("keyValueFilters[]", f"compoundType_b:{CATEGORIA}"))
         estado, _, cuerpo = self._fetch("POST", f"{VAULT}/ui/veevaDocuments/allLW", urlencode(params),
@@ -329,6 +353,8 @@ def procesar(nuup, producto, dir_salida, forzar, dir_recon=None):
         if not elegido:
             fila.update(estado="no encontrado", notas="; ".join(notas + [nota]))
             return fila
+        if nota:
+            notas.append(nota)
         fila.update(documento=elegido["nombre"], titulo=elegido["titulo"], numero=elegido["numero"],
                     version=f"{elegido['major']}.{elegido['minor']}", estado_nuup=elegido["estado"],
                     subido_por=elegido["creado_por"] or elegido["modificado_por"], fecha=elegido["fecha"])
