@@ -4,14 +4,14 @@
 No descarga nada todavía: averigua cómo están guardados los productos y sus
 etiquetas comerciales y guarda lo que encuentra en ./recon_nuup/ para revisarlo.
 
-1) Modo API (por defecto): pide tu usuario y contraseña de NUUP en esta ventana
-   (no se guardan ni se muestran) y consulta la API oficial de Vault.
-2) Si tu usuario no tiene acceso a la API, abre Edge, inicias sesión a mano y
-   registra qué consultas hace la página al abrir el producto DAVANTOR.
+1) Modo navegador (recomendado si entras a NUUP con tu cuenta de Windows/SSO):
+   abre Edge, inicias sesión como siempre y el script registra qué consultas hace
+   la página al abrir DAVANTOR y si esa sesión sirve para la API oficial.
+2) Modo API: pide usuario y contraseña propios de Vault (no sirve con SSO).
 
 Uso:
+    py nuup_recon.py --navegador     (recomendado)
     py nuup_recon.py                 (modo API; si falla, pasa a navegador)
-    py nuup_recon.py --navegador     (directo al modo navegador)
 """
 import argparse
 import getpass
@@ -155,6 +155,37 @@ def modo_api():
 # Modo navegador
 # --------------------------------------------------------------------------
 
+_JS_PROBAR = """async ([url, auth]) => {
+  const h = {'Accept': 'application/json'};
+  if (auth) h['Authorization'] = auth;
+  try {
+    const r = await fetch(url, {headers: h, credentials: 'include'});
+    const t = await r.text();
+    let estado = null;
+    try { estado = JSON.parse(t).responseStatus; } catch (e) {}
+    return {http: r.status, responseStatus: estado, inicio: t.slice(0, 300)};
+  } catch (e) { return {error: String(e)}; }
+}"""
+
+
+def probar_api_con_sesion(ctx, page):
+    """¿Sirve la sesión del navegador (SSO) para la API oficial? Prueba con la
+    cookie de sesión y con cada cookie como encabezado Authorization. Solo se
+    guardan los NOMBRES de las cookies y el resultado, nunca sus valores."""
+    url = f"{API}/metadata/objects/documents/types"
+    resultados = [{"prueba": "solo cookies", **page.evaluate(_JS_PROBAR, [url, None])}]
+    for c in ctx.cookies():
+        if "veevavault.com" not in c.get("domain", ""):
+            continue
+        r = page.evaluate(_JS_PROBAR, [url, c["value"]])
+        if r.get("responseStatus") != "SUCCESS":
+            r.pop("inicio", None)
+        resultados.append({"prueba": f"Authorization = cookie {c['name']}", **r})
+    for r in resultados:
+        print(f"  {r['prueba']}: HTTP {r.get('http')} {r.get('responseStatus') or r.get('error') or ''}")
+    return resultados
+
+
 def modo_navegador():
     from playwright.sync_api import sync_playwright
 
@@ -184,6 +215,7 @@ def modo_navegador():
         page.goto(VAULT, wait_until="domcontentloaded", timeout=120000)
         input("\n>>> Inicia sesión en NUUP en la ventana de Edge. Cuando veas la página de inicio,"
               " vuelve aquí y presiona ENTER... ")
+        guardar("pruebas_api_con_sesion.json", probar_api_con_sesion(ctx, page))
         ctx.on("response", al_responder)
         page.goto(URL_EJEMPLO, wait_until="domcontentloaded", timeout=120000)
         page.wait_for_timeout(8000)
