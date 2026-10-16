@@ -168,19 +168,38 @@ _JS_PROBAR = """async ([url, auth]) => {
 }"""
 
 
-def probar_api_con_sesion(ctx, page):
+def probar_api_con_sesion(ctx):
     """¿Sirve la sesión del navegador (SSO) para la API oficial? Prueba con la
     cookie de sesión y con cada cookie como encabezado Authorization. Solo se
-    guardan los NOMBRES de las cookies y el resultado, nunca sus valores."""
+    guardan los NOMBRES de las cookies y el resultado, nunca sus valores.
+
+    Corre en una pestaña aparte, abierta directo en una dirección de la API
+    (responde JSON y no redirige), para que la página de NUUP no la interrumpa."""
     url = f"{API}/metadata/objects/documents/types"
-    resultados = [{"prueba": "solo cookies", **page.evaluate(_JS_PROBAR, [url, None])}]
+    pestana = ctx.new_page()
+    try:
+        pestana.goto(f"{API}/", wait_until="domcontentloaded", timeout=60000)
+    except Exception as e:
+        print(f"  (aviso al abrir la pestaña de prueba: {str(e).splitlines()[0]})")
+
+    def evaluar(auth):
+        for intento in range(3):
+            try:
+                return pestana.evaluate(_JS_PROBAR, [url, auth])
+            except Exception as e:
+                ultimo = str(e).splitlines()[0]
+                pestana.wait_for_timeout(2000)
+        return {"error": ultimo}
+
+    resultados = [{"prueba": "solo cookies", **evaluar(None)}]
     for c in ctx.cookies():
         if "veevavault.com" not in c.get("domain", ""):
             continue
-        r = page.evaluate(_JS_PROBAR, [url, c["value"]])
+        r = evaluar(c["value"])
         if r.get("responseStatus") != "SUCCESS":
             r.pop("inicio", None)
         resultados.append({"prueba": f"Authorization = cookie {c['name']}", **r})
+    pestana.close()
     for r in resultados:
         print(f"  {r['prueba']}: HTTP {r.get('http')} {r.get('responseStatus') or r.get('error') or ''}")
     return resultados
@@ -215,7 +234,12 @@ def modo_navegador():
         page.goto(VAULT, wait_until="domcontentloaded", timeout=120000)
         input("\n>>> Inicia sesión en NUUP en la ventana de Edge. Cuando veas la página de inicio,"
               " vuelve aquí y presiona ENTER... ")
-        guardar("pruebas_api_con_sesion.json", probar_api_con_sesion(ctx, page))
+        print("Probando si la sesión del navegador sirve para la API...")
+        try:
+            guardar("pruebas_api_con_sesion.json", probar_api_con_sesion(ctx))
+        except Exception as e:  # no detener el reconocimiento por esta prueba
+            print(f"  La prueba falló ({type(e).__name__}); sigo con el resto.")
+            guardar("pruebas_api_con_sesion.json", {"error": str(e)[:500]})
         ctx.on("response", al_responder)
         page.goto(URL_EJEMPLO, wait_until="domcontentloaded", timeout=120000)
         page.wait_for_timeout(8000)
