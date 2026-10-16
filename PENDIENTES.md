@@ -5,9 +5,10 @@ Orden de trabajo: primero lo de arriba.
 ## 1. NUUP: Commercial Labels (en curso)
 
 - [x] Reconocimiento (SSO; la API oficial no acepta la sesión del navegador → se usan las consultas internas de la UI).
-- [x] Reglas: Commercial Labels › BASF Labels, Approved, de Fer / Andrés / Rosa-Ines; todas las etiquetas del paquete más reciente.
+- [x] Reglas: Commercial Labels › BASF Labels, Approved, cualquier autor; todas las etiquetas del paquete más reciente; si no hay, Non Commercial Labels.
 - [x] Reconocimiento con 3 productos (corregidas las marcas de resaltado `!@~ ~@!`).
-- [ ] Corrida completa de los 142 productos.
+- [x] Primera corrida: 84 productos con etiqueta (242 PDF), 58 sin etiqueta.
+- [ ] Segunda corrida con las reglas nuevas y lista final de faltantes.
 
 ## 2. SDS BASF: cierre (en curso)
 
