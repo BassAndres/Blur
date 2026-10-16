@@ -378,11 +378,19 @@ def apartar_anteriores(dir_salida, producto, conservar):
     return movidos
 
 
+def _navegador_cerrado(e):
+    texto = f"{type(e).__name__} {e}"
+    return "TargetClosed" in texto or "has been closed" in texto
+
+
 def procesar(nuup, producto, dir_salida, forzar, dir_recon=None):
     """Devuelve una fila del reporte por etiqueta (o una sola si no hay ninguna)."""
     try:
         elegidas, categoria, notas = buscar_y_elegir(nuup, producto, dir_recon)
     except Exception as e:
+        if _navegador_cerrado(e):
+            raise ErrorNuup("Se cerró la ventana de Edge. Vuelve a correr el script: lo ya "
+                            "descargado no se vuelve a bajar.")
         return [{"producto": producto, "estado": "error", "notas": f"{type(e).__name__}: {str(e)[:300]}"}]
     if not elegidas:
         return [{"producto": producto, "estado": "no encontrado", "notas": "; ".join(notas)}]
@@ -406,6 +414,9 @@ def procesar(nuup, producto, dir_salida, forzar, dir_recon=None):
             conservar.add(fila["archivo"])
             fila["estado"] = "descargado"
         except Exception as e:
+            if _navegador_cerrado(e):
+                raise ErrorNuup("Se cerró la ventana de Edge. Vuelve a correr el script: lo ya "
+                                "descargado no se vuelve a bajar.")
             fila["estado"] = "error"
             notas_doc.append(f"{type(e).__name__}: {str(e)[:300]}")
         fila["notas"] = "; ".join(notas_doc)
@@ -448,14 +459,22 @@ def main():
         dir_recon.mkdir(exist_ok=True)
 
     print(f"{len(productos)} producto(s). Etiquetas en {dir_salida.resolve()}")
-    filas = []
+    # El reporte se combina con el anterior: lo que no se alcance a procesar conserva su fila.
+    por_producto = {}
+    if reporte.exists() and not args.recon:
+        with open(reporte, encoding="utf-8-sig") as f:
+            for fila in csv.DictReader(f):
+                por_producto.setdefault(fila["producto"], []).append(fila)
+    orden = list(productos) + [p for p in por_producto if p not in productos]
+    procesados = 0
     try:
         with Nuup(Path(args.perfil).resolve(), args.pausa) as nuup:
             nuup.esperar_sesion()
             for i, producto in enumerate(productos, 1):
                 nuevas = procesar(nuup, producto, dir_salida, args.forzar, dir_recon)
-                filas.extend(nuevas)
-                escribir_reporte(reporte, filas)
+                por_producto[producto] = nuevas
+                procesados += 1
+                escribir_reporte(reporte, [f for p in orden for f in por_producto.get(p, [])])
                 if nuevas[0].get("documento"):
                     estados = sorted({f["estado"] for f in nuevas})
                     print(f"[{i}/{len(productos)}] {producto}: {len(nuevas)} etiqueta(s) "
@@ -468,6 +487,8 @@ def main():
                           f"{nuevas[0].get('notas', '')[:110]}")
     except ErrorNuup as e:
         print(f"\nERROR: {e}")
+    print(f"\nProcesados en esta corrida: {procesados} de {len(productos)}")
+    filas = [f for p in orden for f in por_producto.get(p, [])]
     conteo = {}
     for f in filas:
         conteo[f["estado"]] = conteo.get(f["estado"], 0) + 1
