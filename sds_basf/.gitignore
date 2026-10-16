@@ -1,0 +1,6 @@
+.perfil_basf/
+sds/
+recon/
+reporte.csv
+reporte_recon.csv
+__pycache__/
