@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Descarga de NUUP (Veeva Vault) la etiqueta comercial más reciente de cada producto.
+"""Descarga de NUUP (Veeva Vault) las etiquetas comerciales más recientes de cada producto.
 
 Reglas:
-  - Solo documentos "NUUP › Commercial Labels › BASF Labels".
-  - Solo en estado Approved.
-  - Solo los subidos por Fernanda Camarillo.
-  - Si hay varias, la de número de documento más alto (CL-00160DAVANTOR-1149 → 1149).
-  - El producto se toma del nombre del documento (CL-00160DAVANTOR-1149 → DAVANTOR),
-    así PLURESTO no se confunde con PLURESTO EXTRA.
+  - Solo documentos "NUUP › Commercial Labels › BASF Labels", en estado Approved,
+    subidos por Fernanda Camarillo, Andrés Basilio Illescas o Rosa-Ines Gonzalez.
+  - El nombre del documento trae producto, paquete y número:
+    CL-00160DAVANTOR-1149 → paquete 00160, producto DAVANTOR, número 1149.
+    (Así PLURESTO no se confunde con PLURESTO EXTRA.)
+  - "Lo más reciente" = el paquete de la etiqueta válida con número más alto; se
+    bajan TODAS las etiquetas válidas de ese paquete (1 L, 10x1 L, caja, reverso...).
 
 Funciona con tu sesión de Edge (inicio de sesión con tu cuenta de Windows): las
 búsquedas y descargas se hacen desde la propia página de NUUP.
@@ -32,12 +33,12 @@ from urllib.parse import urlencode
 VAULT = "https://basf-pelican.veevavault.com"
 PESTANA_QUIETA = f"{VAULT}/api/v24.1/"  # responde JSON y no redirige: base estable para fetch()
 CATEGORIA = "nUUP:commercialLabels:bASFLabels"
-AUTORA = "Fernanda Camarillo"
+AUTORES = ["Fernanda Camarillo", "Andrés Basilio Illescas", "Rosa-Ines Gonzalez"]
 ESTADO_OK = "approved"
 PRODUCTOS_RECON = ["DAVANTOR", "CONVEY", "CABRIO C"]
 
-COLUMNAS = ["producto", "estado", "documento", "titulo", "numero", "version", "estado_nuup",
-            "subido_por", "fecha", "archivo", "notas"]
+COLUMNAS = ["producto", "estado", "paquete", "documento", "titulo", "numero", "version",
+            "estado_nuup", "subido_por", "fecha", "archivo", "notas"]
 
 _JS_FETCH = """async ([metodo, url, cuerpo, cabeceras]) => {
   const r = await fetch(url, {method: metodo, headers: cabeceras, body: cuerpo, credentials: 'include'});
@@ -67,21 +68,22 @@ def normalizar(texto):
     return re.sub(r"\s+", " ", sin_acentos(str(texto or "")).upper()).strip()
 
 
-def nombre_archivo(producto, extension=".pdf"):
+def nombre_archivo(producto, numero=None, extension=".pdf"):
     base = re.sub(r"[^A-Za-z0-9.\-]+", "_", sin_acentos(producto))
     base = re.sub(r"_+", "_", base).strip("._-")
-    return f"{base}_ETIQUETA{extension}"
+    sufijo = f"_{int(numero):04d}" if numero is not None else ""
+    return f"{base}_ETIQUETA{sufijo}{extension}"
 
 
-_NOMBRE_CL = re.compile(r"^[A-Z]+-\d{5}(.+)-(\d+)$")
+_NOMBRE_CL = re.compile(r"^[A-Z]+-(\d{5})(.+)-(\d+)$")
 
 
-def producto_y_numero(nombre_doc):
-    """'CL-00161PLURESTO EXTRA-1308' -> ('PLURESTO EXTRA', 1308)."""
+def desarmar_nombre(nombre_doc):
+    """'CL-00161PLURESTO EXTRA-1308' -> ('00161', 'PLURESTO EXTRA', 1308)."""
     m = _NOMBRE_CL.match(str(nombre_doc or "").strip())
     if not m:
-        return None, None
-    return normalizar(m.group(1)), int(m.group(2))
+        return None, None, None
+    return m.group(1), normalizar(m.group(2)), int(m.group(3))
 
 
 _MARCAS = re.compile(r"!@~|~@!")  # NUUP resalta así el término buscado
@@ -97,7 +99,7 @@ def campo(doc, nombre):
 
 
 def resumir(solr):
-    prod, num = producto_y_numero(campo(solr, "name"))
+    paquete, prod, num = desarmar_nombre(campo(solr, "name"))
     try:
         numero = int(campo(solr, "DocumentNumber") or num or 0)
     except ValueError:
@@ -106,7 +108,7 @@ def resumir(solr):
         "id": solr.get("documentId"), "major": solr.get("majorVersion"),
         "minor": solr.get("minorVersion"), "categoria": solr.get("categoryKey"),
         "archivo_origen": limpiar(solr.get("contentFileName")),
-        "nombre": campo(solr, "name"), "producto": prod, "numero": numero,
+        "nombre": campo(solr, "name"), "producto": prod, "numero": numero, "paquete": paquete,
         "titulo": campo(solr, "title"), "estado": campo(solr, "status"),
         "creado_por": campo(solr, "DocCreatedBy"),
         "modificado_por": campo(solr, "VersionLastModifiedBy"),
@@ -114,8 +116,14 @@ def resumir(solr):
     }
 
 
+def autor_valido(doc):
+    quien = normalizar(doc["creado_por"]) + " | " + normalizar(doc["modificado_por"])
+    return any(normalizar(a) in quien for a in AUTORES)
+
+
 def seleccionar(producto, docs):
-    """Devuelve (elegido, otros_validos, nota)."""
+    """Devuelve (etiquetas_a_bajar, nota). Se bajan todas las etiquetas válidas del
+    paquete más reciente (el de la etiqueta válida con número más alto)."""
     buscado = normalizar(producto)
     etiquetas = [d for d in docs if d["categoria"] == CATEGORIA]
     del_producto = [d for d in etiquetas if d["producto"] == buscado]
@@ -124,25 +132,25 @@ def seleccionar(producto, docs):
         nota = f"{len(etiquetas)} etiqueta(s) en la búsqueda, ninguna de este producto"
         if vistos:
             nota += f" (productos vistos: {', '.join(vistos)[:200]})"
-        return None, [], nota
+        return [], nota
     aprobadas = [d for d in del_producto if d["estado"].lower() == ESTADO_OK]
-    autora = normalizar(AUTORA)
-    de_fer = [d for d in aprobadas
-              if autora in normalizar(d["creado_por"]) or autora in normalizar(d["modificado_por"])]
-    if not de_fer:
+    validas = [d for d in aprobadas if autor_valido(d)]
+    if not validas:
         nota = (f"{len(del_producto)} etiqueta(s) del producto, {len(aprobadas)} aprobada(s), "
-                f"ninguna aprobada subida por {AUTORA}")
+                f"ninguna aprobada de {', '.join(AUTORES)}")
         if aprobadas:
             nota += " (subidas por: " + ", ".join(sorted({d['creado_por'] for d in aprobadas})) + ")"
-        return None, [], nota
-    de_fer.sort(key=lambda d: d["numero"], reverse=True)
-    elegido = de_fer[0]
-    nuevas = [d for d in del_producto if d["numero"] > elegido["numero"] and d not in de_fer]
+        return [], nota
+    mas_alta = max(validas, key=lambda d: d["numero"])
+    paquete = mas_alta["paquete"]
+    elegidas = sorted([d for d in validas if d["paquete"] == paquete],
+                      key=lambda d: d["numero"], reverse=True)
+    nuevas = [d for d in del_producto if d["numero"] > mas_alta["numero"]]
     nota = ""
     if nuevas:
-        nota = ("OJO: hay etiquetas con número más alto que no cumplen las reglas: " +
+        nota = ("OJO: hay etiquetas más nuevas que no cumplen las reglas: " +
                 " || ".join(f"{d['nombre']} ({d['estado']}, {d['creado_por']})" for d in nuevas[:5]))
-    return elegido, de_fer[1:], nota
+    return elegidas, nota
 
 
 def cargar_productos(ruta):
@@ -335,7 +343,7 @@ class Nuup:
 # --------------------------------------------------------------------------
 
 def procesar(nuup, producto, dir_salida, forzar, dir_recon=None):
-    fila = {"producto": producto}
+    """Devuelve una fila del reporte por etiqueta (o una sola si no hay ninguna)."""
     notas = []
     try:
         docs, crudo = nuup.buscar(producto, con_filtro=True)
@@ -343,37 +351,39 @@ def procesar(nuup, producto, dir_salida, forzar, dir_recon=None):
             docs, crudo = nuup.buscar(producto, con_filtro=False)
             notas.append("búsqueda sin filtro de categoría")
         if dir_recon:
-            (dir_recon / f"{nombre_archivo(producto, '')}.json").write_text(
+            (dir_recon / f"{nombre_archivo(producto, extension='')}.json").write_text(
                 json.dumps(crudo, ensure_ascii=False, indent=1), encoding="utf-8")
-            print(f"\n=== {producto}: {len(docs)} documento(s)")
-            for d in docs:
-                print(f"   {d['nombre']} | {d['titulo'][:60]} | {d['categoria']} | {d['estado']} |"
-                      f" {d['creado_por']} | {d['fecha']}")
-        elegido, otros, nota = seleccionar(producto, docs)
-        if not elegido:
-            fila.update(estado="no encontrado", notas="; ".join(notas + [nota]))
-            return fila
-        if nota:
-            notas.append(nota)
-        fila.update(documento=elegido["nombre"], titulo=elegido["titulo"], numero=elegido["numero"],
-                    version=f"{elegido['major']}.{elegido['minor']}", estado_nuup=elegido["estado"],
-                    subido_por=elegido["creado_por"] or elegido["modificado_por"], fecha=elegido["fecha"])
-        if otros:
-            notas.append("otras aprobadas de Fer (número menor): " +
-                         " || ".join(f"{o['nombre']} — {o['titulo']}" for o in otros[:6]))
-        destino = dir_salida / nombre_archivo(producto)
-        existentes = list(dir_salida.glob(nombre_archivo(producto, ".*")))
-        if existentes and not forzar:
-            fila["archivo"] = existentes[0].name
-            notas.append("ya existía, no se volvió a bajar")
-        else:
-            fila["archivo"] = nuup.descargar(elegido, destino).name
-        fila["estado"] = "descargado"
+        elegidas, nota = seleccionar(producto, docs)
     except Exception as e:
-        fila["estado"] = "error"
-        notas.append(f"{type(e).__name__}: {str(e)[:300]}")
-    fila["notas"] = "; ".join(notas)
-    return fila
+        return [{"producto": producto, "estado": "error",
+                 "notas": "; ".join(notas + [f"{type(e).__name__}: {str(e)[:300]}"])}]
+    if nota:
+        notas.append(nota)
+    if not elegidas:
+        return [{"producto": producto, "estado": "no encontrado", "notas": "; ".join(notas)}]
+
+    filas = []
+    for doc in elegidas:
+        fila = {"producto": producto, "paquete": doc["paquete"], "documento": doc["nombre"],
+                "titulo": doc["titulo"], "numero": doc["numero"],
+                "version": f"{doc['major']}.{doc['minor']}", "estado_nuup": doc["estado"],
+                "subido_por": doc["creado_por"] or doc["modificado_por"], "fecha": doc["fecha"]}
+        notas_doc = list(notas)
+        try:
+            existentes = list(dir_salida.glob(nombre_archivo(producto, doc["numero"], ".*")))
+            if existentes and not forzar:
+                fila["archivo"] = existentes[0].name
+                notas_doc.append("ya existía, no se volvió a bajar")
+            else:
+                destino = dir_salida / nombre_archivo(producto, doc["numero"])
+                fila["archivo"] = nuup.descargar(doc, destino).name
+            fila["estado"] = "descargado"
+        except Exception as e:
+            fila["estado"] = "error"
+            notas_doc.append(f"{type(e).__name__}: {str(e)[:300]}")
+        fila["notas"] = "; ".join(notas_doc)
+        filas.append(fila)
+    return filas
 
 
 def main():
@@ -411,17 +421,26 @@ def main():
         with Nuup(Path(args.perfil).resolve(), args.pausa) as nuup:
             nuup.esperar_sesion()
             for i, producto in enumerate(productos, 1):
-                fila = procesar(nuup, producto, dir_salida, args.forzar, dir_recon)
-                filas.append(fila)
+                nuevas = procesar(nuup, producto, dir_salida, args.forzar, dir_recon)
+                filas.extend(nuevas)
                 escribir_reporte(reporte, filas)
-                detalle = fila.get("titulo") or fila.get("notas", "")[:100]
-                print(f"[{i}/{len(productos)}] {producto}: {fila['estado']} — {detalle}")
+                if nuevas[0].get("documento"):
+                    estados = sorted({f["estado"] for f in nuevas})
+                    print(f"[{i}/{len(productos)}] {producto}: {len(nuevas)} etiqueta(s) del paquete "
+                          f"{nuevas[0]['paquete']} ({', '.join(estados)})")
+                    for f in nuevas:
+                        print(f"      {f['documento']} — {f['titulo'][:70]} [{f['estado']}]")
+                else:
+                    print(f"[{i}/{len(productos)}] {producto}: {nuevas[0]['estado']} — "
+                          f"{nuevas[0].get('notas', '')[:110]}")
     except ErrorNuup as e:
         print(f"\nERROR: {e}")
     conteo = {}
     for f in filas:
         conteo[f["estado"]] = conteo.get(f["estado"], 0) + 1
-    print("\nResumen: " + ", ".join(f"{k}: {v}" for k, v in sorted(conteo.items())))
+    con_etiqueta = len({f["producto"] for f in filas if f["estado"] == "descargado"})
+    print(f"\nResumen: {con_etiqueta} producto(s) con etiqueta; archivos: " +
+          ", ".join(f"{k}: {v}" for k, v in sorted(conteo.items())))
     print(f"Reporte: {reporte.resolve()}")
 
 
