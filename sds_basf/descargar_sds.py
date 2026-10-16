@@ -44,7 +44,10 @@ IDIOMA_UI = "es"
 # Lo que manda el portal con el dropdown "Material" e interfaz en español.
 CAMPOS_BUSQUEDA = [f"{IDIOMA_UI}_materialName", "en_materialName", "materialNumber"]
 RESULTADOS_POR_PAGINA = 20
-MAX_PAGINAS = 5
+MAX_PAGINAS = 10
+# Filtros del propio portal (facetas): valores tal como vienen en los resultados.
+FILTRO_IDIOMA = "es"
+FILTRO_AREA = "MX"
 PRODUCTOS_RECON = ["VOLLEY", "CABRIO C", "P.I"]
 
 DESCARGADO = "descargado"
@@ -131,12 +134,28 @@ def _token_relevante(tok):
     return tok != "MX" and not _TAMANO.match(tok)
 
 
-def rango_nombre(producto, nombre_material):
+def nombre_material(r):
+    """El portal manda materialName como {"es": ["Volley®,4X5 L,MX"], "en": [...], ...}."""
+    valor = r.get("materialName")
+    if isinstance(valor, dict):
+        for idioma in ("es", "en"):
+            if valor.get(idioma):
+                valor = valor[idioma]
+                break
+        else:
+            valor = next((v for v in valor.values() if v), "")
+    if isinstance(valor, list):
+        valor = valor[0] if valor else ""
+    return str(valor or "")
+
+
+def rango_nombre(producto, nombre):
     """None si el material no corresponde al producto; si corresponde, cuántas
     palabras extra (sin contar MX ni presentaciones como 20L) trae el nombre.
-    0 = coincidencia exacta."""
+    0 = coincidencia exacta. El nombre del portal es "Producto,presentación,país";
+    se compara solo la parte del producto."""
     buscado = tokens(producto)
-    tiene = tokens(nombre_material)
+    tiene = tokens(nombre.split(",")[0] if "," in nombre else nombre)
     if not buscado or not tiene:
         return None
     compacto = "".join(buscado)
@@ -207,7 +226,7 @@ def texto_fecha(r):
 
 
 def describir(r):
-    return (f"{r.get('materialName')} | {r.get('genVar')} | {r.get('language')} | "
+    return (f"{nombre_material(r)} | {r.get('genVar')} | {r.get('language')} | "
             f"v{texto_version(r)} | {texto_fecha(r)} | mat {r.get('materialNumber')} | "
             f"bi {r.get('biNumber')}")
 
@@ -219,7 +238,7 @@ def seleccionar(producto, reports):
     todos = aplanar(reports)
     por_nombre = []
     for r in todos:
-        rango = rango_nombre(producto, r.get("materialName"))
+        rango = rango_nombre(producto, nombre_material(r))
         if rango is not None:
             por_nombre.append((rango, r))
     validos = [(k, r) for k, r in por_nombre
@@ -242,7 +261,7 @@ def seleccionar(producto, reports):
     # se agrupa por BI + variante + idioma y se queda la versión más nueva.
     documentos = {}
     for r in finalistas:
-        clave = (str(r.get("biNumber") or r.get("materialName")),
+        clave = (str(r.get("biNumber") or nombre_material(r)),
                  str(r.get("genVar")).upper(), str(r.get("language")).lower())
         if clave not in documentos or clave_reciente(r) > clave_reciente(documentos[clave]):
             documentos[clave] = r
@@ -250,7 +269,7 @@ def seleccionar(producto, reports):
     elegido = ordenados[0]
     notas = []
     if mejor > 0:
-        notas.append(f"nombre no exacto en el portal: '{elegido.get('materialName')}'")
+        notas.append(f"nombre no exacto en el portal: '{nombre_material(elegido)}'")
     return {"elegido": elegido, "varias": len(ordenados) > 1,
             "alternativas": ordenados[1:], "rango": mejor, "notas": "; ".join(notas)}
 
@@ -478,7 +497,7 @@ class Portal:
             self.plantilla = None
         return self.cuerpo_spa
 
-    def _cuerpo(self, termino, pagina):
+    def _cuerpo(self, termino, pagina, filtrar):
         if self.plantilla:
             cuerpo = copy.deepcopy(self.plantilla)
         else:
@@ -492,13 +511,15 @@ class Portal:
             }
         cuerpo.update({"searchString": termino, "searchFields": list(CAMPOS_BUSQUEDA),
                        "advancedSearch": False, "fuzzy": False, "page": pagina,
-                       "itemsPerPage": RESULTADOS_POR_PAGINA})
+                       "itemsPerPage": RESULTADOS_POR_PAGINA,
+                       "languageFilters": [FILTRO_IDIOMA] if filtrar else [],
+                       "validityAreaFilters": [FILTRO_AREA] if filtrar else []})
         return cuerpo
 
-    def buscar(self, termino, producto, crudo=None):
+    def buscar(self, termino, producto, crudo=None, filtrar=True):
         reports = []
         for pagina in range(MAX_PAGINAS):
-            r = self._llamar("POST", SEARCH_URL, json=self._cuerpo(termino, pagina))
+            r = self._llamar("POST", SEARCH_URL, json=self._cuerpo(termino, pagina, filtrar))
             if r.status_code != 200:
                 raise ErrorPortal(f"búsqueda '{termino}' HTTP {r.status_code}: {r.text[:200]}")
             datos = r.json() or {}
@@ -506,11 +527,16 @@ class Portal:
                 crudo.append(datos)
             nuevos = datos.get("reports") or []
             reports.extend(nuevos)
-            total_paginas = datos.get("totalPages") or 1
+            # El portal no manda totalPages: lo calcula con totalElements / itemsPerPage.
+            total = datos.get("totalElements")
+            if isinstance(total, int):
+                total_paginas = -(-total // RESULTADOS_POR_PAGINA)
+            else:
+                total_paginas = pagina + 2 if len(nuevos) >= RESULTADOS_POR_PAGINA else 1
             if pagina + 1 >= total_paginas:
                 break
             # Resultados por relevancia: si esta página ya no trae el producto, parar.
-            if not any(rango_nombre(producto, x.get("materialName")) is not None
+            if not any(rango_nombre(producto, nombre_material(x)) is not None
                        for x in aplanar(nuevos)):
                 break
         return reports
@@ -544,15 +570,18 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
     notas = []
     try:
         sel, termino = None, None
-        for termino in (f"{producto} MX", producto):
+        # Con los filtros del portal (español + área MX); al final, respaldo sin filtros.
+        intentos = [(f"{producto} MX", True), (producto, True), (producto, False)]
+        for termino, filtrar in intentos:
             crudo = [] if dir_recon else None
-            reports = portal.buscar(termino, producto, crudo)
+            reports = portal.buscar(termino, producto, crudo, filtrar)
             if dir_recon:
-                guardar_recon(dir_recon, producto, termino, crudo, reports)
+                guardar_recon(dir_recon, producto, termino, crudo, reports, filtrar)
             sel = seleccionar(producto, reports)
             if sel["elegido"]:
                 break
-            notas.append(f"'{termino}': {sel['notas']}")
+            etiqueta = "" if filtrar else " (sin filtros)"
+            notas.append(f"'{termino}'{etiqueta}: {sel['notas']}")
         fila["termino_buscado"] = termino
 
         elegido = sel["elegido"]
@@ -563,7 +592,7 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
 
         org, nota_org = portal.org_para(elegido)
         fila.update(
-            nombre_documento=elegido.get("materialName") or "",
+            nombre_documento=nombre_material(elegido),
             variante=elegido.get("genVar") or "",
             idioma=elegido.get("language") or "",
             version=texto_version(elegido),
@@ -574,7 +603,8 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
             coincidencia_nombre="exacta" if sel["rango"] == 0 else "parcial",
         )
         if termino == producto:
-            notas.append(f"no apareció con '{producto} MX'; encontrado buscando solo el nombre")
+            notas.append(f"no apareció con '{producto} MX'; encontrado buscando solo el nombre"
+                         + ("" if filtrar else " y sin filtros"))
         if sel["notas"]:
             notas.append(sel["notas"])
         if nota_org:
@@ -600,15 +630,17 @@ def procesar(portal, producto, dir_sds, forzar, dir_recon=None):
     return fila
 
 
-def guardar_recon(dir_recon, producto, termino, crudo, reports):
+def guardar_recon(dir_recon, producto, termino, crudo, reports, filtrar):
     base = nombre_archivo(producto).replace("_SDS_MX.pdf", "")
-    sufijo = "MX" if termino.endswith(" MX") else "solo_nombre"
+    sufijo = ("MX" if termino.endswith(" MX") else "solo_nombre") + ("" if filtrar else "_sin_filtros")
     ruta = dir_recon / f"{base}__{sufijo}.json"
     ruta.write_text(json.dumps(crudo, ensure_ascii=False, indent=2), encoding="utf-8")
-    lineas = [f"\n=== {producto} — búsqueda '{termino}': {len(aplanar(reports))} resultado(s)"]
+    filtro = f"filtros {FILTRO_IDIOMA}+{FILTRO_AREA}" if filtrar else "sin filtros"
+    lineas = [f"\n=== {producto} — búsqueda '{termino}' ({filtro}): "
+              f"{len(aplanar(reports))} resultado(s)"]
     for r in aplanar(reports):
         marca = []
-        if rango_nombre(producto, r.get("materialName")) is not None:
+        if rango_nombre(producto, nombre_material(r)) is not None:
             marca.append("nombre")
         if es_espanol(r.get("language")):
             marca.append("ES")
