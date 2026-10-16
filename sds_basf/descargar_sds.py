@@ -322,16 +322,16 @@ def seleccionar(producto, reports, catalogo=None, orgs_validas=None, aproximado=
 
 
 def seleccionar_alternativa(producto, reports, catalogo=None, orgs_validas=None):
-    """Sin versión MX: la mejor versión en español (primero la global *_00, luego la más reciente)."""
+    """Sin versión MX: la versión global en español (variante *_00) más reciente."""
     por_nombre, _ = candidatos_por_nombre(producto, reports, catalogo, orgs_validas)
     # Solo el mismo producto (nombre exacto: "Headline Amp" no es HEADLINE) y solo hojas
     # de seguridad (SDS_*; las SDI_* son otro tipo de documento).
+    # Solo la versión global en español: variante SDS_*_00 (p. ej. SDS_CPA_00, SDS_GEN_00).
     en_es = [r for k, r in por_nombre if k == 0 and es_espanol(r.get("language"))
-             and str(r.get("genVar") or "").upper().startswith("SDS_")]
+             and re.fullmatch(r"SDS_\w+_00", str(r.get("genVar") or "").upper())]
     if not en_es:
         return None
-    return sorted(en_es, key=lambda r: (str(r.get("genVar")).endswith("_00"), clave_reciente(r)),
-                  reverse=True)[0]
+    return max(en_es, key=clave_reciente)
 
 
 def cargar_productos(ruta):
@@ -759,7 +759,7 @@ def main():
                     help="reprocesar solo lo pendiente de ese reporte (no descargados o con "
                          "coincidencia parcial); los PDF anteriores se mueven a sds/_anteriores/")
     ap.add_argument("--alternativa-es", action="store_true",
-                    help="si no hay versión MX, bajar la mejor versión en español a sds_alternativas/")
+                    help="si no hay versión MX, bajar la versión global en español (*_00) a sds_alternativas/")
     args = ap.parse_args()
     catalogo = None
 

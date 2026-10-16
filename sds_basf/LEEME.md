@@ -44,9 +44,8 @@ la conexión directa aun así falla, hace las peticiones desde el propio navegad
 - Reprocesa solo los productos no descargados o con coincidencia parcial. Los PDF anteriores
   de esos productos se mueven a `sds/_anteriores/` y el resultado se combina en `reporte.csv`
   (respaldo en `reporte_anterior.csv`).
-- `--alternativa-es`: si no hay versión MX en español, baja la mejor versión en español
-  (primero la global `*_00`, luego la más reciente) a `sds_alternativas/` con estado
-  `alternativa (no MX)`.
+- `--alternativa-es`: si no hay versión MX en español, baja la versión global en español
+  (variante `SDS_*_00`, la más reciente) a `sds_alternativas/` con estado `alternativa (no MX)`.
 
 Reglas extra: se descartan documentos cuya fuente no admite D016 (p. ej. recubrimientos),
 nombres que corresponden mejor a otro producto de la lista (SIEGE PRO para SIEGE) y
